@@ -10,6 +10,10 @@ use Logto\Sdk\Oidc\TokenResponse;
 use GuzzleHttp\Client;
 use Logto\Sdk\LogtoException;
 use Logto\Sdk\Oidc\UserInfoResponse;
+use Symfony\Component\Cache\Adapter\ArrayAdapter;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Psr18Client;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 final class OidcCoreTest extends TestCase
 {
@@ -37,9 +41,11 @@ final class OidcCoreTest extends TestCase
     );
   }
 
-  protected function getInstance(Response ...$responses)
+  protected function getInstance(MockResponse ...$responses)
   {
-    return new MockOidcCore(Mocks::getOidcProviderMetadata(), new Client(['handler' => new MockHandler($responses)]));
+    $client = new Psr18Client(new MockHttpClient($responses));
+
+    return new MockOidcCore(Mocks::getOidcProviderMetadata(), $client, $client, $client, new ArrayAdapter());
   }
   protected function getTokenResponse()
   {

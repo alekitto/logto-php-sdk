@@ -1,4 +1,7 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
+
 namespace Logto\Sdk;
 
 use Logto\Sdk\Constants\ReservedResource;
@@ -10,49 +13,9 @@ use Logto\Sdk\Oidc\UserInfoResponse;
 use Logto\Sdk\Storage\SessionStorage;
 use Logto\Sdk\Storage\Storage;
 use Logto\Sdk\Storage\StorageKey;
-
-/**
- * The sign-in session that stores the information for the sign-in callback.
- * Should be stored before redirecting the user to Logto.
- */
-class SignInSession
-{
-  function __construct(
-    /** The redirect URI for the current sign-in session. */
-    public string $redirectUri,
-    /** The code verifier of Proof Key for Code Exchange (PKCE). */
-    public string $codeVerifier,
-    /** The state for OAuth 2.0 authorization request. */
-    public string $state,
-  ) {
-  }
-}
-
-/** The access token class for a resource. */
-class AccessToken
-{
-  function __construct(
-    /** The access token string. */
-    public string $token,
-    /**
-     * The timestamp (in seconds) when the access token will expire.
-     * Note this is not the expiration time of the access token itself, but the
-     * expiration time of the access token cache.
-     */
-    public int $expiresAt,
-  ) {
-  }
-}
-
-/**
- * The interaction mode for the sign-in request. Note this is not a part of the OIDC
- * specification, but a Logto extension.
- */
-enum InteractionMode: string
-{
-  case signUp = 'signUp';
-  case signIn = 'signIn';
-}
+use Psr\Cache\CacheItemPoolInterface;
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestFactoryInterface;
 
 /**
  * The main class of the Logto client. You should create an instance of this class
@@ -62,9 +25,14 @@ class LogtoClient
 {
   protected OidcCore $oidcCore;
 
-  function __construct(public LogtoConfig $config, public Storage $storage = new SessionStorage())
-  {
-    $this->oidcCore = OidcCore::create($config->endpoint);
+  function __construct(
+    public LogtoConfig $config,
+    CacheItemPoolInterface $cache,
+    public Storage $storage = new SessionStorage(),
+    ?ClientInterface $client = null,
+    ?RequestFactoryInterface $requestFactory = null,
+  ) {
+    $this->oidcCore = OidcCore::create($config->endpoint, $cache, $client, $requestFactory);
   }
 
   /**

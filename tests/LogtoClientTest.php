@@ -1,11 +1,10 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 require_once __DIR__ . '/Oidc/Mocks.php';
 
 use PHPUnit\Framework\TestCase;
-use GuzzleHttp\Psr7\Response;
-use GuzzleHttp\Client;
-use GuzzleHttp\Handler\MockHandler;
 use Logto\Sdk\LogtoClient;
 use Logto\Sdk\LogtoConfig;
 use Logto\Sdk\Oidc\OidcCore;
@@ -19,6 +18,10 @@ use Logto\Sdk\Models\AccessTokenClaims;
 use Logto\Sdk\Models\IdTokenClaims;
 use Logto\Sdk\Oidc\UserInfoResponse;
 use Logto\Sdk\Constants\UserScope;
+use Symfony\Component\Cache\Adapter\ArrayAdapter;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Psr18Client;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 class MemoryStorage implements Storage
 {
@@ -58,12 +61,17 @@ class FakeOidcCore extends MockOidcCore
 class MockLogtoClient extends LogtoClient
 {
   public Storage $storage;
-  function __construct(public LogtoConfig $config, array ...$responses)
+  function __construct(public LogtoConfig $config, MockResponse ...$responses)
   {
+    $client = new Psr18Client(new MockHttpClient($responses));
+
     $this->storage = new MemoryStorage();
     $this->oidcCore = new FakeOidcCore(
       Mocks::getOidcProviderMetadata(),
-      new Client(['handler' => new MockHandler(...array_values($responses))])
+      $client,
+      $client,
+      $client,
+      new ArrayAdapter(),
     );
   }
 
@@ -73,9 +81,9 @@ class MockLogtoClient extends LogtoClient
 
 final class LogtoClientTest extends TestCase
 {
-  protected function getInstance(LogtoConfig $config = new LogtoConfig(endpoint: "http://localhost:3001", appId: "app-id"), array ...$responses)
+  protected function getInstance(LogtoConfig $config = new LogtoConfig(endpoint: "http://localhost:3001", appId: "app-id"), array $responses = [])
   {
-    return new MockLogtoClient($config, ...array_values($responses));
+    return new MockLogtoClient($config, ...$responses);
   }
 
   function test_signIn()
@@ -205,7 +213,7 @@ final class LogtoClientTest extends TestCase
       refresh_token: "refreshToken",
       id_token: "idToken",
     );
-    $client = $this->getInstance(responses: [new Response(body: json_encode($tokenResponse))]);
+    $client = $this->getInstance(responses: [new MockResponse(json_encode($tokenResponse))]);
     $client->storage->set(
       StorageKey::signInSession,
       '{"redirectUri": "https://redirect_uri/some_path", "codeVerifier": "codeVerifier", "state": "state"}',
@@ -238,8 +246,8 @@ final class LogtoClientTest extends TestCase
   function test_getAccessToken_useRefreshToken()
   {
     $client = $this->getInstance(responses: [
-      new Response(
-        body: json_encode(
+      new MockResponse(
+        json_encode(
           new TokenResponse(
             access_token: "accessToken",
             token_type: "Bearer",

@@ -1,10 +1,10 @@
 <?php declare(strict_types=1);
 use Logto\Sdk\Models\OidcProviderMetadata;
-use GuzzleHttp\Psr7\Response;
 use Logto\Sdk\Oidc\OidcCore;
 use Firebase\JWT\CachedKeySet;
 use Firebase\JWT\Key;
 use Firebase\JWT\JWK;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 class MockOidcCore extends OidcCore
 {
@@ -66,12 +66,11 @@ class Mocks
     );
   }
 
-  static function mockResponse(object|array $body, int $status = 200, array $headers = ['is-testing' => 'true']): Response
+  static function mockResponse(object|array $body, int $status = 200, array $headers = ['is-testing' => 'true']): MockResponse
   {
-    return new Response(
-      $status,
-      $headers,
-      json_encode($body)
+    return new MockResponse(
+      json_encode($body),
+      ['status_code' => $status, 'headers' => $headers],
     );
   }
 }

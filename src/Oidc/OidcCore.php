@@ -1,15 +1,21 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
+
 namespace Logto\Sdk\Oidc;
 
 use Firebase\JWT\CachedKeySet;
-use GuzzleHttp\Psr7\HttpFactory;
-use GuzzleHttp\Client;
+use Http\Discovery\Psr17FactoryDiscovery;
+use Http\Discovery\Psr18ClientDiscovery;
 use Logto\Sdk\LogtoException;
 use Logto\Sdk\Constants\ReservedScope;
 use Logto\Sdk\Constants\UserScope;
 use Logto\Sdk\Models\OidcProviderMetadata;
-use Phpfastcache\CacheManager;
 use Firebase\JWT\JWT;
+use Psr\Cache\CacheItemPoolInterface;
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\StreamFactoryInterface;
 
 /**
  * The core OIDC functions for the Logto client. Provider-agonistic functions
@@ -26,15 +32,25 @@ class OidcCore
    * Note it may take a few time to fetch the provider metadata since it will send a
    * network request.
    */
-  static function create(string $logtoEndpoint): OidcCore
+  static function create(
+    string $logtoEndpoint,
+    CacheItemPoolInterface $cache,
+    ?ClientInterface $client = null,
+    ?RequestFactoryInterface $requestFactory = null,
+  ): OidcCore
   {
-    $client = new Client();
-    $body = $client->get(
-      $logtoEndpoint . '/oidc/.well-known/openid-configuration',
-      ['headers' => ['user-agent' => '@logto/php', 'accept' => '*/*']]
+    $client ??= Psr18ClientDiscovery::find();
+    $requestFactory ??= Psr17FactoryDiscovery::findRequestFactory();
+
+
+    $body = $client->sendRequest(
+      $requestFactory
+        ->createRequest('GET', $logtoEndpoint . '/oidc/.well-known/openid-configuration')
+        ->withAddedHeader('user-agent', '@logto/php')
+        ->withAddedHeader('accept', '*/*')
     )->getBody()->getContents();
 
-    return new OidcCore(new OidcProviderMetadata(...json_decode($body, true)));
+    return new OidcCore(new OidcProviderMetadata(...json_decode($body, true)), $client, $requestFactory, $cache);
   }
 
   /** Generate a random string (32 bytes) for the state parameter. */
@@ -86,13 +102,18 @@ class OidcCore
    * 
    * @see OidcCore::create()
    */
-  public function __construct(public OidcProviderMetadata $metadata, protected Client $client = new Client())
-  {
+  public function __construct(
+      public OidcProviderMetadata $metadata,
+      protected ClientInterface $client,
+      private readonly RequestFactoryInterface $requestFactory,
+      private readonly StreamFactoryInterface $streamFactory,
+      CacheItemPoolInterface $cache,
+  ) {
     $this->jwkSet = new CachedKeySet(
       $this->metadata->jwks_uri,
       $client,
-      new HttpFactory(),
-      CacheManager::getInstance('files'),
+      $requestFactory,
+      $cache,
       300,
       true
     );
@@ -123,16 +144,18 @@ class OidcCore
   /** Fetch the token from the token endpoint using the authorization code. */
   public function fetchTokenByCode(string $clientId, ?string $clientSecret, string $redirectUri, string $code, string $codeVerifier): TokenResponse
   {
-    $response = $this->client->post($this->metadata->token_endpoint, [
-      'form_params' => [
-        'grant_type' => 'authorization_code',
-        'client_id' => $clientId,
-        'client_secret' => $clientSecret,
-        'redirect_uri' => $redirectUri,
-        'code' => $code,
-        'code_verifier' => $codeVerifier,
-      ],
-    ])->getBody()->getContents();
+    $response = $this->client->sendRequest(
+      $this->requestFactory->createRequest('POST', $this->metadata->token_endpoint)
+        ->withBody($this->streamFactory->createStream(http_build_query([
+          'grant_type' => 'authorization_code',
+          'client_id' => $clientId,
+          'client_secret' => $clientSecret,
+          'redirect_uri' => $redirectUri,
+          'code' => $code,
+          'code_verifier' => $codeVerifier,
+        ])))
+    )->getBody()->getContents();
+
     return new TokenResponse(...json_decode($response, true));
   }
 
@@ -145,16 +168,17 @@ class OidcCore
   public function fetchTokenByRefreshToken(string $clientId, ?string $clientSecret, string $refreshToken, string $resource = ''): TokenResponse
   {
     $isOrganizationResource = str_starts_with($resource, self::ORGANIZATION_URN_PREFIX);
-    $response = $this->client->post($this->metadata->token_endpoint, [
-      'form_params' => [
-        'grant_type' => 'refresh_token',
-        'client_id' => $clientId,
-        'client_secret' => $clientSecret,
-        'refresh_token' => $refreshToken,
-        'resource' => $isOrganizationResource ? null : ($resource ?: null),
-        'organization_id' => $isOrganizationResource ? substr($resource, strlen(self::ORGANIZATION_URN_PREFIX)) : null,
-      ],
-    ])->getBody()->getContents();
+    $response = $this->client->sendRequest(
+      $this->requestFactory->createRequest('POST', $this->metadata->token_endpoint)
+        ->withBody($this->streamFactory->createStream(http_build_query([
+          'grant_type' => 'refresh_token',
+          'client_id' => $clientId,
+          'client_secret' => $clientSecret,
+          'refresh_token' => $refreshToken,
+          'resource' => $isOrganizationResource ? null : ($resource ?: null),
+          'organization_id' => $isOrganizationResource ? substr($resource, strlen(self::ORGANIZATION_URN_PREFIX)) : null,
+        ]))),
+    )->getBody()->getContents();
     return new TokenResponse(...json_decode($response, true));
   }
 
@@ -166,11 +190,10 @@ class OidcCore
   public function fetchUserInfo(string $accessToken): UserInfoResponse
   {
     $userInfoEndpoint = $this->metadata->userinfo_endpoint;
-    $response = $this->client->get($userInfoEndpoint, [
-      'headers' => [
-        'Authorization' => "Bearer $accessToken",
-      ]
-    ])->getBody()->getContents();
+    $response = $this->client->sendRequest(
+      $this->requestFactory->createRequest('GET', $userInfoEndpoint)
+        ->withAddedHeader('Authorization', "Bearer $accessToken")
+    )->getBody()->getContents();
     return new UserInfoResponse(...json_decode($response, true));
   }
 }
